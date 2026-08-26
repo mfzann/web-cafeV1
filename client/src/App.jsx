@@ -40,6 +40,7 @@ export default function App() {
             <Route path="/order/confirmation/:orderId" element={<ConfirmationPage />} />
 
             {/* Admin Routes */}
+            <Route path="/admin" element={<Navigate to="/admin/dashboard" replace />} />
             <Route path="/admin/login" element={<AdminLoginPage />} />
             <Route
               path="/admin/dashboard"
