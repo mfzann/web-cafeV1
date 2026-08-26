@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: web-cafe-backend
+    env: node
+    buildCommand: npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: VERCEL
+        value: false
