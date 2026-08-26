@@ -1,315 +1,214 @@
-import sqlite3 from 'sqlite3';
-import { open } from 'sqlite';
 import bcrypt from 'bcryptjs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import fs from 'fs';
+import alasql from 'alasql';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// On Vercel, the filesystem is read-only except for /tmp
+// Check if running on Vercel
 const isVercel = process.env.VERCEL || process.env.NOW_REGION;
-const dbPath = isVercel ? '/tmp/cafeorder.db' : path.join(__dirname, '../../cafeorder.db');
 
-import fs from 'fs';
-if (isVercel && !fs.existsSync('/tmp/cafeorder.db') && fs.existsSync(path.join(__dirname, '../../cafeorder.db'))) {
-  fs.copyFileSync(path.join(__dirname, '../../cafeorder.db'), '/tmp/cafeorder.db');
-}
+let dbInstance = null;
+let isAlaSqlInitialized = false;
 
 export async function getDb() {
-  const db = await open({
+  if (dbInstance) return dbInstance;
+
+  if (isVercel) {
+    console.log('Using AlaSQL (In-Memory) for Vercel Serverless');
+    const alaDb = new alasql.Database();
+    
+    // Create a wrapper that matches the 'sqlite' module API
+    dbInstance = {
+      all: async (sql, params = []) => alaDb.exec(sql.replace(/AUTOINCREMENT/gi, ''), params),
+      get: async (sql, params = []) => { 
+        const r = alaDb.exec(sql.replace(/AUTOINCREMENT/gi, ''), params); 
+        return r && r.length > 0 ? r[0] : undefined; 
+      },
+      run: async (sql, params = []) => { 
+        alaDb.exec(sql.replace(/AUTOINCREMENT/gi, ''), params); 
+        return { changes: 1 }; 
+      },
+      exec: async (sql) => {
+        // AlaSQL doesn't like multiple statements in one exec well, but it works for basic creates
+        const statements = sql.split(';').filter(s => s.trim().length > 0);
+        for(let s of statements) {
+          alaDb.exec(s.replace(/AUTOINCREMENT/gi, ''));
+        }
+      }
+    };
+    return dbInstance;
+  }
+
+  // Use real SQLite3 locally
+  const sqlite3 = (await import('sqlite3')).default;
+  const { open } = await import('sqlite');
+  
+  const dbPath = path.join(__dirname, '../../cafeorder.db');
+  
+  dbInstance = await open({
     filename: dbPath,
     driver: sqlite3.Database
   });
 
-  // Enable foreign keys
-  await db.run('PRAGMA foreign_keys = ON');
-
-  return db;
+  await dbInstance.run('PRAGMA foreign_keys = ON');
+  return dbInstance;
 }
 
 export async function initDb() {
   const db = await getDb();
+  if (isVercel && isAlaSqlInitialized) return; // Prevent re-init on warm serverless calls
 
-  console.log('Initializing SQLite database schema...');
+  console.log('Initializing database schema...');
 
   // 1. Tables (Meja)
   await db.exec(`
     CREATE TABLE IF NOT EXISTS tables (
-      id TEXT PRIMARY KEY,
-      table_number INTEGER UNIQUE NOT NULL,
-      capacity INTEGER DEFAULT 4,
-      qr_code_url TEXT,
-      status TEXT DEFAULT 'available',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      id STRING PRIMARY KEY,
+      table_number INT UNIQUE,
+      capacity INT,
+      qr_code_url STRING,
+      status STRING,
+      created_at STRING
     );
   `);
 
   // 2. Menu Categories & Menu Items
   await db.exec(`
     CREATE TABLE IF NOT EXISTS menu_items (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      description TEXT,
-      price REAL NOT NULL,
-      category TEXT NOT NULL,
-      image_url TEXT,
-      is_available INTEGER DEFAULT 1,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      id STRING PRIMARY KEY,
+      name STRING,
+      description STRING,
+      price REAL,
+      category STRING,
+      image_url STRING,
+      is_available INT,
+      created_at STRING
     );
   `);
 
-  // 3. Orders
+  // 3. Orders & Order Items
   await db.exec(`
     CREATE TABLE IF NOT EXISTS orders (
-      id TEXT PRIMARY KEY,
-      table_id TEXT,
-      table_number INTEGER,
-      order_type TEXT NOT NULL DEFAULT 'dine_in',
-      status TEXT NOT NULL DEFAULT 'pending',
-      payment_status TEXT NOT NULL DEFAULT 'pending',
-      payment_type TEXT,
-      total_amount REAL NOT NULL,
-      customer_name TEXT,
-      notes TEXT,
-      snap_token TEXT,
-      midtrans_transaction_id TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      id STRING PRIMARY KEY,
+      table_number INT,
+      customer_name STRING,
+      order_type STRING,
+      status STRING,
+      payment_status STRING,
+      payment_method STRING,
+      total_amount REAL,
+      snap_token STRING,
+      created_at STRING,
+      updated_at STRING
     );
   `);
 
-  // 4. Order Items
   await db.exec(`
     CREATE TABLE IF NOT EXISTS order_items (
-      id TEXT PRIMARY KEY,
-      order_id TEXT NOT NULL,
-      menu_item_id TEXT NOT NULL,
-      item_name TEXT NOT NULL,
-      unit_price REAL NOT NULL,
-      quantity INTEGER NOT NULL,
-      note TEXT,
-      subtotal REAL NOT NULL,
-      FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
+      id STRING PRIMARY KEY,
+      order_id STRING,
+      menu_item_id STRING,
+      menu_item_name STRING,
+      quantity INT,
+      price REAL,
+      subtotal REAL,
+      notes STRING
     );
   `);
 
-  // 5. Admins
+  // 4. Admin Users
   await db.exec(`
     CREATE TABLE IF NOT EXISTS admins (
-      id TEXT PRIMARY KEY,
-      username TEXT UNIQUE NOT NULL,
-      password_hash TEXT NOT NULL,
-      name TEXT NOT NULL,
-      role TEXT NOT NULL DEFAULT 'admin',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      id STRING PRIMARY KEY,
+      username STRING UNIQUE,
+      password_hash STRING,
+      name STRING,
+      role STRING,
+      created_at STRING
     );
   `);
 
-  // 6. Settings (Key-Value)
+  // 5. Settings
   await db.exec(`
     CREATE TABLE IF NOT EXISTS settings (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
+      key STRING PRIMARY KEY,
+      value STRING
     );
   `);
 
-  // Seed default Admin if not exists
+  // Seed default admin if not exists
   const adminCount = await db.get('SELECT COUNT(*) as count FROM admins');
   if (adminCount.count === 0) {
     const passwordHash = await bcrypt.hash('admin123', 10);
     await db.run(
-      `INSERT INTO admins (id, username, password_hash, name, role) VALUES (?, ?, ?, ?, ?)`,
-      ['adm_1', 'admin', passwordHash, 'Head Staff / Kasir', 'admin']
+      \`INSERT INTO admins (id, username, password_hash, name, role) VALUES (?, ?, ?, ?, ?)\`,
+      ['adm_1', 'admin', passwordHash, 'Super Admin', 'admin']
     );
-    console.log('Default admin seeded: username=admin, password=admin123');
+    const userHash = await bcrypt.hash('user123', 10);
+    await db.run(
+      \`INSERT INTO admins (id, username, password_hash, name, role) VALUES (?, ?, ?, ?, ?)\`,
+      ['adm_2', 'user', userHash, 'Kasir Utama', 'kasir']
+    );
+    console.log('Default admins seeded.');
   }
 
-  // Seed default Tables if empty
+  // Seed default tables if empty
   const tableCount = await db.get('SELECT COUNT(*) as count FROM tables');
   if (tableCount.count === 0) {
-    const seedTables = [
-      { id: 'tbl-1', number: 1, capacity: 2 },
-      { id: 'tbl-2', number: 2, capacity: 4 },
-      { id: 'tbl-3', number: 3, capacity: 4 },
-      { id: 'tbl-4', number: 4, capacity: 6 },
-      { id: 'tbl-5', number: 5, capacity: 2 },
-      { id: 'tbl-6', number: 6, capacity: 8 },
-      { id: 'tbl-7', number: 7, capacity: 4 },
-      { id: 'tbl-8', number: 8, capacity: 4 },
-      { id: 'tbl-9', number: 9, capacity: 2 },
-      { id: 'tbl-10', number: 10, capacity: 6 }
-    ];
-    for (const t of seedTables) {
+    for (let i = 1; i <= 10; i++) {
       await db.run(
-        `INSERT INTO tables (id, table_number, capacity, qr_code_url, status) VALUES (?, ?, ?, ?, ?)`,
-        [t.id, t.number, t.capacity, `/order?table=${t.number}`, 'available']
+        \`INSERT INTO tables (id, table_number, capacity, status) VALUES (?, ?, ?, ?)\`,
+        [\`tbl_\${i}\`, i, 4, 'available']
       );
     }
     console.log('Seeded 10 cafe tables.');
   }
 
-  // Seed default Menu Items if empty
+  // Seed Menu
   const menuCount = await db.get('SELECT COUNT(*) as count FROM menu_items');
   if (menuCount.count === 0) {
-    const seedMenu = [
-      // Makanan Berat
-      {
-        id: 'menu-1',
-        name: 'Nasi Goreng Special Rempah',
-        description: 'Nasi goreng racikan rempah khas cafe disajikan dengan telur mata sapi, sate ayam, dan kerupuk renyah.',
-        price: 35000,
-        category: 'Makanan Berat',
-        image_url: 'https://images.unsplash.com/photo-1603133872878-684f208fb84b?w=600&auto=format&fit=crop&q=80',
-        is_available: 1
-      },
-      {
-        id: 'menu-2',
-        name: 'Spaghetti Carbonara Creamy',
-        description: 'Pastanya lembut dengan saus krim gurih, keju parmesan impor, dan taburan beef bacon gurih.',
-        price: 42000,
-        category: 'Makanan Berat',
-        image_url: 'https://images.unsplash.com/photo-1612874742237-6526221588e3?w=600&auto=format&fit=crop&q=80',
-        is_available: 1
-      },
-      {
-        id: 'menu-3',
-        name: 'Chicken Steak Sauce Blackpepper',
-        description: 'Dada ayam grill juicy dipadu saus lada hitam pedas gurih, disajikan dengan kentang goreng dan tumis sayur.',
-        price: 48000,
-        category: 'Makanan Berat',
-        image_url: 'https://images.unsplash.com/photo-1544025162-d76694265947?w=600&auto=format&fit=crop&q=80',
-        is_available: 1
-      },
-      {
-        id: 'menu-4',
-        name: 'Beef Wagyu Burger Deluxe',
-        description: 'Patty sapi wagyu lembut 150g dengan keju cheddar leleh, caramelized onion, dan saus rahasia cafe.',
-        price: 55000,
-        category: 'Makanan Berat',
-        image_url: 'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=600&auto=format&fit=crop&q=80',
-        is_available: 1
-      },
-
-      // Minuman
-      {
-        id: 'menu-5',
-        name: 'Kopi Susu Aren Signature',
-        description: 'Espresso blend Arabica-Robusta dengan susu segar dan sirup gula aren murni khas nusantara.',
-        price: 24000,
-        category: 'Minuman',
-        image_url: 'https://images.unsplash.com/photo-1541167760496-1628856ab772?w=600&auto=format&fit=crop&q=80',
-        is_available: 1
-      },
-      {
-        id: 'menu-6',
-        name: 'Iced Matcha Oat Latte',
-        description: 'Matcha Uji Jepang premium dipadu dengan susu oat gurih dingin yang menyegarkan.',
-        price: 28000,
-        category: 'Minuman',
-        image_url: 'https://images.unsplash.com/photo-1536256263959-770b48d82b0a?w=600&auto=format&fit=crop&q=80',
-        is_available: 1
-      },
-      {
-        id: 'menu-7',
-        name: 'Berry Sparkling Lemonade',
-        description: 'Perasan jeruk lemon segar, sirup rasberi, dan air soda dingin dengan hiasan daun mint segar.',
-        price: 26000,
-        category: 'Minuman',
-        image_url: 'https://images.unsplash.com/photo-1513558161293-cdaf765ed2fd?w=600&auto=format&fit=crop&q=80',
-        is_available: 1
-      },
-      {
-        id: 'menu-8',
-        name: 'Classic Hot Cappuccino',
-        description: 'Double shot espresso dengan susu creamy hangat dan foam tebal bertabur bubuk cokelat.',
-        price: 25000,
-        category: 'Minuman',
-        image_url: 'https://images.unsplash.com/photo-1572442388796-11668a67e53d?w=600&auto=format&fit=crop&q=80',
-        is_available: 1
-      },
-
-      // Snack
-      {
-        id: 'menu-9',
-        name: 'Truffle French Fries',
-        description: 'Kentang goreng garing ditaburi minyak truffle aromatik dan keju parmesan parut.',
-        price: 28000,
-        category: 'Snack',
-        image_url: 'https://images.unsplash.com/photo-1576107232684-1279f390859f?w=600&auto=format&fit=crop&q=80',
-        is_available: 1
-      },
-      {
-        id: 'menu-10',
-        name: 'Crispy Chicken Wings BBQ',
-        description: '6 potong sayap ayam renyah dilumuri saus BBQ smoky pedas manis khas chef.',
-        price: 32000,
-        category: 'Snack',
-        image_url: 'https://images.unsplash.com/photo-1567620832903-9fc6debc209f?w=600&auto=format&fit=crop&q=80',
-        is_available: 1
-      },
-
-      // Dessert
-      {
-        id: 'menu-11',
-        name: 'Classic Basque Burnt Cheesecake',
-        description: 'Cheesecake panggang bertekstur creamy di dalam dengan permukaan terkaramelisasi harum.',
-        price: 32000,
-        category: 'Dessert',
-        image_url: 'https://images.unsplash.com/photo-1533134242443-d4fd215305ad?w=600&auto=format&fit=crop&q=80',
-        is_available: 1
-      },
-      {
-        id: 'menu-12',
-        name: 'Matcha Lava Cake & Ice Cream',
-        description: 'Kue hangat dengan lelehan matcha manis gurih di dalamnya, disajikan bersama 1 scoop es krim vanila.',
-        price: 34000,
-        category: 'Dessert',
-        image_url: 'https://images.unsplash.com/photo-1606313564200-e75d5e30476c?w=600&auto=format&fit=crop&q=80',
-        is_available: 1
-      }
+    const defaultMenu = [
+      { id: 'm1', name: 'Nasi Goreng Spesial', price: 25000, category: 'Makanan', desc: 'Nasi goreng dengan telur, ayam, dan kerupuk.' },
+      { id: 'm2', name: 'Mie Goreng Seafood', price: 28000, category: 'Makanan', desc: 'Mie goreng dengan udang dan cumi segar.' },
+      { id: 'm3', name: 'Kopi Susu Gula Aren', price: 18000, category: 'Minuman', desc: 'Es kopi susu blend dengan gula aren asli.' },
+      { id: 'm4', name: 'Lemon Tea', price: 15000, category: 'Minuman', desc: 'Teh lemon segar manis merona.' },
+      { id: 'm5', name: 'Kentang Goreng', price: 15000, category: 'Snack', desc: 'Kentang goreng renyah bumbu BBQ.' }
     ];
-
-    for (const item of seedMenu) {
+    for (const m of defaultMenu) {
       await db.run(
-        `INSERT INTO menu_items (id, name, description, price, category, image_url, is_available) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [item.id, item.name, item.description, item.price, item.category, item.image_url, item.is_available]
+        \`INSERT INTO menu_items (id, name, description, price, category) VALUES (?, ?, ?, ?, ?)\`,
+        [m.id, m.name, m.desc, m.price, m.category]
       );
     }
     console.log('Seeded initial menu items.');
   }
 
-  // Seed default Settings
-  const defaultSettings = [
-    { key: 'cafe_name', value: 'CafeOrder Bistro & Brew' },
-    { key: 'cafe_address', value: 'Jl. Riau No. 45, Bandung, Jawa Barat' },
-    { key: 'tax_rate', value: '10' }, // 10%
-    { key: 'service_fee', value: '5' }, // 5%
-    { key: 'default_theme', value: 'warm' }, // 'light', 'dark', 'warm'
-    { key: 'midtrans_client_key', value: 'SB-Mid-client-DEMOKEY123' },
-    { key: 'midtrans_server_key', value: 'SB-Mid-server-DEMOKEY123' },
-    { key: 'midtrans_is_production', value: 'false' },
-    { key: 'midtrans_enable_simulation', value: 'true' }, // Allow instant payment testing button
-    {
-      key: 'operational_hours',
-      value: JSON.stringify([
-        { day: 0, day_name: 'Minggu', open: '08:00', close: '22:00', is_active: true },
-        { day: 1, day_name: 'Senin', open: '08:00', close: '22:00', is_active: true },
-        { day: 2, day_name: 'Selasa', open: '08:00', close: '22:00', is_active: true },
-        { day: 3, day_name: 'Rabu', open: '08:00', close: '22:00', is_active: true },
-        { day: 4, day_name: 'Kamis', open: '08:00', close: '22:00', is_active: true },
-        { day: 5, day_name: 'Jumat', open: '08:00', close: '23:00', is_active: true },
-        { day: 6, day_name: 'Sabtu', open: '08:00', close: '23:00', is_active: true }
-      ])
+  // Seed Settings
+  const settingsCount = await db.get('SELECT COUNT(*) as count FROM settings');
+  if (settingsCount.count === 0) {
+    const defaultSettings = [
+      { key: 'cafe_name', value: 'CafeOrder Digital' },
+      { key: 'tax_rate', value: '11' },
+      { key: 'service_fee', value: '5' },
+      { key: 'operational_hours', value: JSON.stringify([
+        { day: 1, open: "08:00", close: "22:00", is_active: true },
+        { day: 2, open: "08:00", close: "22:00", is_active: true },
+        { day: 3, open: "08:00", close: "22:00", is_active: true },
+        { day: 4, open: "08:00", close: "22:00", is_active: true },
+        { day: 5, open: "08:00", close: "23:00", is_active: true },
+        { day: 6, open: "08:00", close: "23:00", is_active: true },
+        { day: 0, open: "08:00", close: "23:00", is_active: true }
+      ])}
+    ];
+    for (const s of defaultSettings) {
+      await db.run(\`INSERT INTO settings (key, value) VALUES (?, ?)\`, [s.key, s.value]);
     }
-  ];
-
-  for (const s of defaultSettings) {
-    await db.run(
-      `INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)`,
-      [s.key, s.value]
-    );
+    console.log('Seeded default settings.');
   }
 
+  isAlaSqlInitialized = true;
   console.log('Database initialization completed.');
 }
