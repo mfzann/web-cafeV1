@@ -219,7 +219,9 @@ router.get('/tables', authenticateAdmin, async (req, res) => {
   try {
     const db = await getDb();
     const tables = await db.all('SELECT * FROM tables ORDER BY table_number ASC');
-    const hostUrl = 'http://localhost:5188';
+    const host = req.headers['x-forwarded-host'] || req.get('host');
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+    const hostUrl = `${protocol}://${host}`;
 
     // Add QR Code Data URLs
     const tablesWithQR = await Promise.all(
