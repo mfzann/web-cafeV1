@@ -24,8 +24,7 @@ const PORT = process.env.PORT || 5055;
 // CORS setup for frontend local dev & production
 app.use(cors({
   origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  credentials: false
 }));
 
 app.use(express.json());

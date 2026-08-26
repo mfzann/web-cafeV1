@@ -144,12 +144,12 @@ export async function initDb() {
   if (adminCount.count === 0) {
     const passwordHash = await bcrypt.hash('admin123', 10);
     await db.run(
-      \`INSERT INTO admins (id, username, password_hash, name, role) VALUES (?, ?, ?, ?, ?)\`,
+      `INSERT INTO admins (id, username, password_hash, name, role) VALUES (?, ?, ?, ?, ?)`,
       ['adm_1', 'admin', passwordHash, 'Super Admin', 'admin']
     );
     const userHash = await bcrypt.hash('user123', 10);
     await db.run(
-      \`INSERT INTO admins (id, username, password_hash, name, role) VALUES (?, ?, ?, ?, ?)\`,
+      `INSERT INTO admins (id, username, password_hash, name, role) VALUES (?, ?, ?, ?, ?)`,
       ['adm_2', 'user', userHash, 'Kasir Utama', 'kasir']
     );
     console.log('Default admins seeded.');
@@ -160,8 +160,8 @@ export async function initDb() {
   if (tableCount.count === 0) {
     for (let i = 1; i <= 10; i++) {
       await db.run(
-        \`INSERT INTO tables (id, table_number, capacity, status) VALUES (?, ?, ?, ?)\`,
-        [\`tbl_\${i}\`, i, 4, 'available']
+        `INSERT INTO tables (id, table_number, capacity, status) VALUES (?, ?, ?, ?)`,
+        [`tbl_${i}`, i, 4, 'available']
       );
     }
     console.log('Seeded 10 cafe tables.');
@@ -179,7 +179,7 @@ export async function initDb() {
     ];
     for (const m of defaultMenu) {
       await db.run(
-        \`INSERT INTO menu_items (id, name, description, price, category) VALUES (?, ?, ?, ?, ?)\`,
+        `INSERT INTO menu_items (id, name, description, price, category) VALUES (?, ?, ?, ?, ?)`,
         [m.id, m.name, m.desc, m.price, m.category]
       );
     }
@@ -204,7 +204,7 @@ export async function initDb() {
       ])}
     ];
     for (const s of defaultSettings) {
-      await db.run(\`INSERT INTO settings (key, value) VALUES (?, ?)\`, [s.key, s.value]);
+      await db.run(`INSERT INTO settings (key, value) VALUES (?, ?)`, [s.key, s.value]);
     }
     console.log('Seeded default settings.');
   }
