@@ -7,7 +7,14 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const dbPath = path.join(__dirname, '../../cafeorder.db');
+// On Vercel, the filesystem is read-only except for /tmp
+const isVercel = process.env.VERCEL || process.env.NOW_REGION;
+const dbPath = isVercel ? '/tmp/cafeorder.db' : path.join(__dirname, '../../cafeorder.db');
+
+import fs from 'fs';
+if (isVercel && !fs.existsSync('/tmp/cafeorder.db') && fs.existsSync(path.join(__dirname, '../../cafeorder.db'))) {
+  fs.copyFileSync(path.join(__dirname, '../../cafeorder.db'), '/tmp/cafeorder.db');
+}
 
 export async function getDb() {
   const db = await open({

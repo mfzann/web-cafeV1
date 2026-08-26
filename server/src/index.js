@@ -74,11 +74,17 @@ app.get('/api/health', (req, res) => {
 
 // Initialize DB and Start Server
 initDb().then(() => {
-  server.listen(PORT, () => {
-    console.log(`====================================================`);
-    console.log(`☕ CafeOrder Server running on http://localhost:${PORT}`);
-    console.log(`====================================================`);
-  });
+  if (process.env.VERCEL || process.env.NOW_REGION) {
+    console.log('Running on Vercel Serverless (Server listening skipped)');
+  } else {
+    server.listen(PORT, () => {
+      console.log(`====================================================`);
+      console.log(`☕ CafeOrder Server running on http://localhost:${PORT}`);
+      console.log(`====================================================`);
+    });
+  }
 }).catch((err) => {
   console.error('Failed to initialize database:', err);
 });
+
+export default app;
